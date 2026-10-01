@@ -182,6 +182,87 @@ class CPR_GUI(tk.Tk):
         
         #================================================================================#
 
+        # DEFINE GUI ELEMENTS OF THE FAN TAB
+
+        fan_tab = ttk.Frame(tab_control)
+
+        tab_control.add(fan_tab, text ='  Fan  ')
+
+        fan_tab.grid_columnconfigure(0, weight=5)
+        fan_tab.grid_columnconfigure(1, weight=10)
+        fan_tab.grid_columnconfigure(2, weight=10)
+        fan_tab.grid_columnconfigure(3, weight=10)
+
+        fan_tab.grid_propagate(False)
+
+        # Both dictionnaries use the same IDs as the fan dictionnary of the calculator
+        self.OG_fan = {} #The OG entries from the vbios
+        self.custom_fan = {} #VARIABLES of the fan entries
+        self.CUSTOM_fan_entries = {} #The custom entries set by the user
+
+        # Fan limits = fan cooler table
+
+        ttk.Label(fan_tab, text ="Fan limits :").grid(column = 0, row = 0, padx=3, pady=3)
+        ttk.Label(fan_tab, text ="Stock vBIOS values :").grid(column = 1, row = 0, padx=3, pady=3)
+        ttk.Label(fan_tab, text ="Custom values :").grid(column = 2, row = 0,padx=3, pady=3)
+
+        fan_limit_rows = [("pwm_min", "Min fan speed (%) :", 100), ("pwm_max", "Max fan speed (%) :", 100), ("rpm_min", "Min RPM :", 10000), ("rpm_max", "Max RPM :", 10000)]
+
+        row = 1
+        for ID, text, maximum in fan_limit_rows:
+            ttk.Label(fan_tab, text=text).grid(column = 0, row = row, padx=3, pady=2)
+
+            self.OG_fan[ID] = ttk.Entry(fan_tab, state="disabled")
+            self.OG_fan[ID].grid(column = 1, row = row, padx=10, pady=2, sticky="ew")
+
+            self.custom_fan[ID] = tk.StringVar(self)
+            self.CUSTOM_fan_entries[ID] = ttk.Spinbox(fan_tab, textvariable=self.custom_fan[ID] ,from_=0,to=maximum,increment=1,validate="key",
+                validatecommand=(self.register(self._validate), "%P"), state="disabled")
+            self.CUSTOM_fan_entries[ID].grid(column= 2, row=row, padx=10, pady=2, sticky="ew")
+            row += 1
+
+        # Fan curve = fan policy table, 3 points
+
+        # Stock & custom are side by side here = not enough height in the tab to stack them
+        
+        fan_curve_frame = ttk.Frame(fan_tab)
+        fan_curve_frame.grid(column = 0, columnspan=4, row = 5, pady=(10,0), sticky="ew")
+        
+        fan_curve_frame.grid_columnconfigure(0, weight=5)
+        for column in range(1, 7):
+            fan_curve_frame.grid_columnconfigure(column, weight=10)
+        
+        ttk.Label(fan_curve_frame, text ="Fan curve :").grid(column = 0, row = 0, rowspan=2, padx=3, pady=2)
+        
+        fan_curve_columns = [("temp", "Temperature (°C) :", 127, self._validate_decimal), ("pwm", "Fan speed (%) :", 100, self._validate), ("rpm", "RPM :", 10000, self._validate)]
+        
+        column = 1
+        for value, text, maximum, validate in fan_curve_columns:
+            ttk.Label(fan_curve_frame, text=text).grid(column = column, columnspan=2, row = 0, padx=3, pady=2)
+            ttk.Label(fan_curve_frame, text="Stock").grid(column = column, row = 1, padx=3, pady=2)
+            ttk.Label(fan_curve_frame, text="Custom").grid(column = column+1, row = 1, padx=3, pady=2)
+            
+            for point in range(1, 4):
+                ID = f"{value}_{point}"
+                
+                self.OG_fan[ID] = ttk.Entry(fan_curve_frame, state="disabled", width=7)
+                self.OG_fan[ID].grid(column = column, row = point+1, padx=(10,2), pady=2, sticky="ew")
+                
+                self.custom_fan[ID] = tk.StringVar(self)
+                self.CUSTOM_fan_entries[ID] = ttk.Spinbox(fan_curve_frame, textvariable=self.custom_fan[ID] ,from_=0,to=maximum,increment=1,validate="key",
+                    validatecommand=(self.register(validate), "%P"), state="disabled", width=7)
+                self.CUSTOM_fan_entries[ID].grid(column= column+1, row=point+1, padx=(2,10), pady=2, sticky="ew")
+            column += 2
+        
+        for point in range(1, 4):
+            ttk.Label(fan_curve_frame, text=f"Point {point} :").grid(column = 0, row = point+1, padx=3, pady=2)
+        
+        ttk.Label(fan_tab, text =
+                  "Note : The fan never goes under the min fan speed / min RPM of the fan limits, even with a custom fan curve\nin the OS. To lower the minimum, lower the fan limits AND point 1 of the fan curve."
+                  ).grid(column = 0, columnspan=4, row = 6,padx=30, pady=3, sticky="ew")
+        
+        #================================================================================#
+
         # DEFINE GUI ELEMENTS OF THE DISPLAY / DCB TAB
 
         display_tab = ttk.Frame(tab_control)
@@ -321,7 +402,11 @@ class CPR_GUI(tk.Tk):
         
     def _validate(self, P):
         return P.isdigit()
-        
+
+    def _validate_decimal(self, P):
+        # Same as above but allows one "." = for the fan curve temperatures (82.5°C for example)
+        return P.replace(".", "", 1).isdigit()
+
         #open_button.bind("<Button-1>", self.GUI_handler.select_file)
     
     #================================================================================#

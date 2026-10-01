@@ -19,7 +19,8 @@ class GUI_handler:
         self.legal_mem_clocks = False
         self.legal_power = False
         self.legal_slider = False
-        
+        self.legal_fan = False
+
         self.critical_save_vbios_error = False
         
         #VARS
@@ -73,10 +74,12 @@ class GUI_handler:
             if self.vbios_parsed is not None:
                 self.load_clocks_to_GUI()
                 self.load_power_to_GUI()
+                self.load_fan_to_GUI()
                 self.set_architecture()
                 self.load_header_to_GUI()
             else:
                 self.GUI.architecture_var.set("Unknown")
+                self.load_fan_to_GUI()
                 
             # ================= LOADING UI ELEMENTS ================= #
             #self.load_checksum_to_GUI()
@@ -222,6 +225,68 @@ class GUI_handler:
                 
                 CUSTOM_entry_list[index].set(0)
         
+    def load_fan_to_GUI(self):
+        """
+        Loads the fan limits (fan cooler table) & the fan curve (fan policy table) into the fan tab of the GUI
+        If the fan tables are not found, everything is emptied & disabled
+        """
+        fan_list = []
+        if self.vbios_parsed is not None:
+            fan_list = self.vbios_parsed.FAN_list
+
+        self.legal_fan = len(fan_list) > 0
+
+        for ID in self.GUI.OG_fan:
+            value = ""
+            if self.legal_fan:
+                value = fan_list[0][ID][0] #assumes that the two vbios images are identical, like the rest of the program
+
+            self.GUI.OG_fan[ID].config(state="normal")
+            self.GUI.OG_fan[ID].delete(0, "end")
+            self.GUI.OG_fan[ID].insert(0, value)
+            self.GUI.OG_fan[ID].config(state="disabled")
+
+            self.GUI.custom_fan[ID].set(value)
+            self.GUI.CUSTOM_fan_entries[ID].config(state="normal" if self.legal_fan else "disabled")
+
+        if not self.legal_fan:
+            self.GUI.console["state"] = "normal"
+            self.GUI.console.insert(tk.INSERT, "\n\n"+"ERROR : Fan tables are not found or not in the expected Pascal format, fan values are uneditable")
+            self.GUI.console["state"] = "disabled"
+
+    def get_custom_fan_dictionnary(self):
+        """
+        Function returns the custom fan values in a dictionnary (same IDs as the fan dictionnary of the calculator)
+        Returns None if the values are not legal :
+            - empty value
+            - fan speed above 100% or min > max
+            - fan curve points not in ascending order
+        """
+        custom_fan = {}
+
+        for ID in self.GUI.custom_fan:
+            try:
+                if ID.startswith("temp"):
+                    custom_fan[ID] = float(self.GUI.custom_fan[ID].get())
+                else:
+                    custom_fan[ID] = int(self.GUI.custom_fan[ID].get())
+            except ValueError:
+                return None
+
+        ascending_lists = [
+            [custom_fan["pwm_min"], custom_fan["pwm_max"], 100],
+            [custom_fan["rpm_min"], custom_fan["rpm_max"], 65535],
+            [custom_fan["pwm_1"], custom_fan["pwm_2"], custom_fan["pwm_3"], 100],
+            [custom_fan["rpm_1"], custom_fan["rpm_2"], custom_fan["rpm_3"], 65535],
+            [custom_fan["temp_1"], custom_fan["temp_2"], custom_fan["temp_3"], 127]
+            ]
+
+        for ascending_list in ascending_lists:
+            if ascending_list != sorted(ascending_list):
+                return None
+
+        return custom_fan
+
     def set_architecture(self):
         """
         Function modified in V1.4
@@ -579,7 +644,43 @@ class GUI_handler:
                 if slider_value == "True":
                     temp_vbios[(img[2][1]) : (img[2][1] + 5)] = struct.pack("BBBBB", 0x0F, 0x02, 0xFF, 0xFF, 0xFF)
                     
-        #=====================================================================================================#     
+        #=====================================================================================================#
+
+        #FAN TABLES SAVING
+
+        custom_fan = None
+        if self.legal_fan:
+            custom_fan = self.get_custom_fan_dictionnary()
+
+        if self.legal_fan == False:
+            self.GUI.console["state"] = "normal"
+            self.GUI.console.insert(tk.INSERT, "\n\n"+"SAVE ERROR : Did not change any fan values due to previous error")
+            self.GUI.console["state"] = "disabled"
+
+        elif custom_fan == None:
+            self.GUI.console["state"] = "normal"
+            self.GUI.console.insert(tk.INSERT, "\n\n"+"SAVE ERROR : Did not change any fan values because a value is empty or too high, or because min > max, or because the fan curve points are not in ascending order")
+            self.GUI.console["state"] = "disabled"
+
+        else:
+            self.GUI.console["state"] = "normal"
+            self.GUI.console.insert(tk.INSERT, "\n\n"+"SAVE INFORMATION: Custom Fan values correctly saved to vbios")
+            if custom_fan["pwm_1"] < custom_fan["pwm_min"] or custom_fan["rpm_1"] < custom_fan["rpm_min"]:
+                self.GUI.console.insert(tk.INSERT, "\n"+"SAVE WARNING : Point 1 of the fan curve is under the fan limits, the fan will stay at the min fan speed / min RPM of the fan limits")
+            self.GUI.console["state"] = "disabled"
+
+            # pwm = 1 byte in %, rpm = 2 bytes, temp = 2 bytes in 1/32 °C
+            for img in self.vbios_parsed.FAN_list:
+                for ID in custom_fan:
+                    offset = img[ID][1]
+                    if ID.startswith("pwm"):
+                        temp_vbios[offset : offset + 1] = struct.pack("<B", custom_fan[ID])
+                    elif ID.startswith("temp"):
+                        temp_vbios[offset : offset + 2] = struct.pack("<H", round(custom_fan[ID]*32))
+                    else:
+                        temp_vbios[offset : offset + 2] = struct.pack("<H", custom_fan[ID])
+
+        #=====================================================================================================#
 
         # FIX THE CHECKSUM
 

@@ -47,6 +47,8 @@ stock memory of 3000Mhz -> set 4000Mhz and the card will boost to max 3500Mhz ->
 
 You can try different memory clock values and see what works...
 
+Fan editing (Pascal only, "Fan" tab) : the "fan limits" are hard limits, the fan never goes under the min fan speed / min RPM, even with a custom fan curve in the OS. To lower the minimum fan speed, lower the fan limits AND point 1 of the fan curve. Temperatures of the fan curve are stored in 1/32 °C steps.
+
 ## Screenshots of V1.4:
 The vbios shown is my personal P4000m OC vbios that enabled me to take the first place in 3D mark time spy =D
 

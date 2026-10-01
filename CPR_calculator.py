@@ -64,6 +64,18 @@ class parsed_data():
         self.MEM_clock_list = self.get_MEM_clock_list()
         self.POWER_list = self.get_power_table_list()
 
+        # FAN TABLES, list is empty if the fan tables are not found / not in the expected format
+        # Define the offsets inside the fan cooler entry & the fan policy entry + the length of each value
+        self.fan_cooler_offset_dictionnary = {"pwm_min" : 2, "pwm_max" : 3, "rpm_min" : 14, "rpm_max" : 16}
+        self.fan_policy_offset_dictionnary = {"pwm_1" : 17, "pwm_2" : 18, "pwm_3" : 19,
+                                              "temp_1" : 21, "rpm_1" : 23,
+                                              "temp_2" : 25, "rpm_2" : 27,
+                                              "temp_3" : 29, "rpm_3" : 31}
+        try:
+            self.FAN_list = self.get_fan_table_list()
+        except Exception:
+            self.FAN_list = []
+
         self.get_header_info()
         #print(self.header_list)
     
@@ -528,7 +540,161 @@ class parsed_data():
         #print("power list :")
         #print(power_list_2D)
         return power_list_2D
-    
+
+    def get_rom_image_layout(self, bit_offset):
+        """
+        Returns (base, image0_length, extension_offset) for the vbios image that contains the BIT header found at bit_offset
+
+        - base = offset of the "55 AA" legacy image, all the BIT pointers are relative to it
+        - image0_length = length of this legacy image
+        - extension_offset = offset of the first extension image (code type 0xE0, "56 4E" + NPDS), None if there is none
+
+        The pointers bigger than image0_length point inside the extension images, as if they were directly
+        after the legacy image (the UEFI image in between is skipped)
+        """
+        data = self.data
+
+        base = -1
+        cursor = bit_offset
+        while True:
+            cursor = data.rfind(struct.pack("BB", 0x55, 0xAA), 0, cursor + 1)
+            if cursor == -1:
+                break
+            pcir = cursor + struct.unpack("<H", data[cursor+0x18:cursor+0x1A])[0]
+            if data[pcir:pcir+4] == b"PCIR":
+                base = cursor
+                break
+            cursor -= 1
+
+        if base == -1:
+            return None
+
+        image0_length = 0
+        extension_offset = None
+        offset = base
+
+        for i in range(8): #Never more than a few images
+            if data[offset:offset+2] not in (struct.pack("BB", 0x55, 0xAA), struct.pack("BB", 0x56, 0x4E)):
+                break
+            pcir = offset + struct.unpack("<H", data[offset+0x18:offset+0x1A])[0]
+            if data[pcir:pcir+4] not in (b"PCIR", b"NPDS"):
+                break
+
+            length = struct.unpack("<H", data[pcir+0x10:pcir+0x12])[0]*512
+            code_type = struct.unpack("<B", data[pcir+0x14:pcir+0x15])[0]
+
+            if i == 0:
+                image0_length = length
+            elif code_type == 0xE0:
+                extension_offset = offset
+                break
+
+            if length == 0:
+                break
+            offset += length
+
+        return (base, image0_length, extension_offset)
+
+    def get_fan_table_list(self):
+        """
+        This functions looks for the fan cooler table & the fan policy table, thanks to the pointers of the BIT "P" token (BIT_PERF_PTRS v2)
+
+        Returns a list containing one dictionnary for each vbios image, each value is [value, offset] :
+
+        Fan cooler table = hard limits of the fan, the card NEVER goes under / over these, even with afterburner & co
+            - pwm_min / pwm_max (in %)
+            - rpm_min / rpm_max
+
+        Fan policy table = the automatic fan curve, 3 points
+            - temp_X (in °C, stored in 1/32 °C inside the vbios)
+            - pwm_X (in %)
+            - rpm_X
+
+        Only the 1.0 version of the tables is known (Pascal) :
+            - cooler table header is "10 04 1A" (version, header size, entry size)
+            - policy table header is "10 05 35"
+        Returns an empty list if anything is different
+        """
+        data = self.data
+        fan_list = []
+
+        bit_string = struct.pack("BB", 0xFF, 0xB8) + b"BIT\x00"
+
+        for bit_offset in self.check_return_offset(data, 0, bit_string):
+            layout = self.get_rom_image_layout(bit_offset)
+            if layout == None:
+                continue
+            base, image0_length, extension_offset = layout
+
+            header_size = struct.unpack("<B", data[bit_offset+8:bit_offset+9])[0]
+            token_size = struct.unpack("<B", data[bit_offset+9:bit_offset+10])[0]
+            token_entries = struct.unpack("<B", data[bit_offset+10:bit_offset+11])[0]
+
+            for i in range(token_entries):
+                token = bit_offset + header_size + i*token_size
+                token_ID, token_version, token_data_size, token_pointer = struct.unpack("<BBHH", data[token:token+6])
+
+                # 0x50 = "P" = BIT_PERF_PTRS, fan cooler is pointer number 22 & fan policy is pointer number 23
+                if token_ID != 0x50 or token_version != 2 or token_data_size < 24*4:
+                    continue
+
+                table_offsets = []
+                for pointer_index in (22, 23):
+                    pointer_offset = base + token_pointer + pointer_index*4
+                    pointer = struct.unpack("<I", data[pointer_offset:pointer_offset+4])[0]
+
+                    if pointer == 0:
+                        table_offsets.append(None)
+                    elif pointer < image0_length:
+                        table_offsets.append(base + pointer)
+                    elif extension_offset != None:
+                        table_offsets.append(extension_offset + pointer - image0_length)
+                    else:
+                        table_offsets.append(None)
+
+                cooler_offset, policy_offset = table_offsets
+                if cooler_offset == None or policy_offset == None:
+                    continue
+
+                # Check the headers + at least 1 entry in both tables
+                if data[cooler_offset:cooler_offset+3] != struct.pack("BBB", 0x10, 0x04, 0x1A) or data[cooler_offset+3] < 1:
+                    continue
+                if data[policy_offset:policy_offset+3] != struct.pack("BBB", 0x10, 0x05, 0x35) or data[policy_offset+3] < 1:
+                    continue
+
+                cooler_entry = cooler_offset + 4
+                policy_entry = policy_offset + 5
+
+                fan_dictionnary = {}
+
+                for key, offset in self.fan_cooler_offset_dictionnary.items():
+                    fan_dictionnary[key] = self.get_fan_value(key, cooler_entry + offset)
+                for key, offset in self.fan_policy_offset_dictionnary.items():
+                    fan_dictionnary[key] = self.get_fan_value(key, policy_entry + offset)
+
+                if fan_dictionnary not in fan_list:
+                    fan_list.append(fan_dictionnary)
+
+        #print(fan_list)
+        return fan_list
+
+    def get_fan_value(self, key, adress):
+        """
+        Is called by the above fonction, returns [value, offset] of one fan value
+        pwm = 1 byte in %, rpm = 2 bytes, temp = 2 bytes in 1/32 °C
+        """
+        if key.startswith("pwm"):
+            value = struct.unpack("<B", self.data[adress:adress+1])[0]
+        else:
+            value = struct.unpack("<H", self.data[adress:adress+2])[0]
+
+        if key.startswith("temp"):
+            value = value/32
+            if value == int(value):
+                value = int(value)
+
+        return [value, adress]
+
     def get_pci_device_id(self):
         """Return NVIDIA PCI device ID from a valid PCIR structure when possible."""
         data = self.data
